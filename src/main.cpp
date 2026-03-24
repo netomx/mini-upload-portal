@@ -265,10 +265,10 @@ int main() {
         std::string new_role = req.get_param_value("role");
 
         if (create_user(username, password, new_role)) {
-            res.set_content(R"({\"success\":true, \"message\":\"Usuario creado correctamente\"})", "application/json");
+            res.set_content(R"({"success":true, "message":"Usuario creado correctamente"})", "application/json");
         } else {
             res.status = 400;
-            res.set_content(R"({\"error\":\"No se pudo crear el usuario (¿ya existe el nombre?)\"})", "application/json");
+            res.set_content(R"({"error":"No se pudo crear el usuario"})", "application/json");
         }
     });
 
@@ -320,6 +320,22 @@ int main() {
             std::cout << "[RESET ERROR] Falló el UPDATE - result: " << result << std::endl;
             res.status = 500;
             res.set_content(R"({"error":"No se pudo resetear la contraseña"})", "application/json");
+        }
+    });
+
+    // ===================== CAMBIO DE CONTRASEÑA (cualquier usuario logueado) =====================
+    svr.Post("/api/change-password", [&](const httplib::Request& req, httplib::Response& res) {
+        int user_id; std::string role;
+        if (!check_auth(req, res, user_id, role)) return;
+
+        std::string old_password = req.get_param_value("old_password");
+        std::string new_password = req.get_param_value("new_password");
+
+        if (change_password(user_id, old_password, new_password)) {
+            res.set_content(R"({"success":true, "message":"Contraseña cambiada correctamente"})", "application/json");
+        } else {
+            res.status = 400;
+            res.set_content(R"({"error":"La contraseña actual es incorrecta o la nueva es inválida"})", "application/json");
         }
     });
 

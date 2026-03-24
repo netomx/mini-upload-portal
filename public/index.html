@@ -1,3 +1,5 @@
+original
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -24,7 +26,8 @@
         <button onclick="showNewUserModal()" id="btn-new-user" class="hidden px-5 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-2xl text-sm font-medium flex items-center gap-2">
           <span>+</span> Nuevo Usuario
         </button>
-        
+        <button onclick="showChangePasswordModal()" class="px-5 py-2 bg-amber-600 hover:bg-amber-700 rounded-2xl text-sm font-medium">Cambiar mi contraseña</button>
+
         <button onclick="logout()" class="px-8 py-3 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-2xl text-sm font-medium">Cerrar Sesión</button>
       </div>
     </div>
@@ -83,7 +86,7 @@
       </div>
 
       <!-- LISTADO USUARIOS -->
-      <div class="bg-gray-900 rounded-3xl overflow-hidden">
+      <div id="users-section" class="hidden bg-gray-900 rounded-3xl overflow-hidden">
         <div class="px-8 py-5 bg-gray-800 font-medium text-lg flex justify-between">
           <span>Usuarios del sistema</span>
           <button onclick="loadUsers()" class="text-emerald-400 hover:text-white text-sm">↻ Refrescar</button>
@@ -121,14 +124,17 @@
     </div>
   </div>
 
-  <!-- MODAL RESET CONTRASEÑA -->
-  <div id="reset-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-50">
-    <div class="modal bg-gray-900 rounded-3xl p-8 max-w-md w-full mx-4 text-center">
-      <div class="text-amber-400 text-6xl mb-6">🔑</div>
-      <h3 class="text-2xl font-bold mb-4">Nueva contraseña generada</h3>
-      <div id="new-password-display" class="bg-gray-800 border border-gray-700 rounded-2xl p-6 text-2xl font-mono mb-8 break-all select-all"></div>
-      <button onclick="copyResetPassword()" class="w-full py-4 bg-amber-500 hover:bg-amber-600 rounded-2xl font-semibold mb-3">📋 Copiar contraseña</button>
-      <button onclick="hideResetModal()" class="w-full py-4 bg-gray-700 hover:bg-gray-600 rounded-2xl">Cerrar</button>
+ <!-- MODAL CAMBIAR MI CONTRASEÑA -->
+  <div id="change-password-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+    <div class="modal bg-gray-900 rounded-3xl p-8 max-w-md w-full mx-4">
+      <h3 class="text-2xl font-bold mb-6">Cambiar mi contraseña</h3>
+      <input id="old-password" type="password" placeholder="Contraseña actual" class="w-full mb-4 bg-gray-800 border border-gray-700 rounded-2xl px-5 py-4">
+      <input id="new-password-modal" type="password" placeholder="Nueva contraseña" class="w-full mb-4 bg-gray-800 border border-gray-700 rounded-2xl px-5 py-4">
+      <input id="new-password-confirm-modal" type="password" placeholder="Confirmar nueva contraseña" class="w-full mb-8 bg-gray-800 border border-gray-700 rounded-2xl px-5 py-4">
+      <div class="flex gap-4">
+        <button onclick="hideChangePasswordModal()" class="flex-1 py-4 bg-gray-700 hover:bg-gray-600 rounded-2xl">Cancelar</button>
+        <button onclick="changeMyPassword()" class="flex-1 py-4 bg-emerald-500 hover:bg-emerald-600 rounded-2xl font-semibold">Cambiar Contraseña</button>
+      </div>
     </div>
   </div>
 
@@ -194,8 +200,43 @@
       try {
         const data = await apiCall(`${API}/api/me`);
         document.getElementById('user-info').innerHTML = `<span class="text-emerald-400">👤 Conectado</span>`;
-        document.getElementById('btn-new-user').classList.toggle('hidden', data.role !== 'admin');
+       const isAdmin = data.role === 'admin';
+        document.getElementById('btn-new-user').classList.toggle('hidden', !isAdmin);
+        document.getElementById('users-section').classList.toggle('hidden', !isAdmin);
+	if (isAdmin) {
+          loadUsers();
+        }
       } catch(e) {}
+    }
+	
+	// ==================== CAMBIAR MI CONTRASEÑA ====================
+    function showChangePasswordModal() {
+      document.getElementById('change-password-modal').classList.remove('hidden');
+    }
+    function hideChangePasswordModal() {
+      document.getElementById('change-password-modal').classList.add('hidden');
+    }
+
+    async function changeMyPassword() {
+      const oldPass = document.getElementById('old-password').value;
+      const newPass = document.getElementById('new-password-modal').value;
+      const confirm = document.getElementById('new-password-confirm-modal').value;
+
+      if (!oldPass || !newPass || newPass !== confirm) {
+        showError('Error', 'Verifica los campos');
+        return;
+      }
+
+      try {
+        await apiCall(`${API}/api/change-password`, {
+          method: 'POST',
+          body: `old_password=${encodeURIComponent(oldPass)}&new_password=${encodeURIComponent(newPass)}`
+        });
+        hideChangePasswordModal();
+        alert('✅ Contraseña cambiada correctamente');
+      } catch(e) {
+        showError('Error', e.message);
+      }
     }
 
     // ==================== ESPACIO DISPONIBLE ====================
@@ -369,7 +410,6 @@
       loadUserInfo();
       loadFiles();
       updateFreeSpace();
-      loadUsers();
       startAutoRefresh();
     }
   </script>

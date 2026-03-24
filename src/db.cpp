@@ -84,5 +84,76 @@ void cleanup_expired_tokens() {
     sqlite3_exec(db, "DELETE FROM sessions WHERE expires < datetime('now') OR last_used < datetime('now', '-7 days')", nullptr, nullptr, nullptr);
 }
 
-bool change_password(int user_id, const std::string& old_pass, const std::string& new_pass) { return false; }
-bool create_user(const std::string& username, const std::string& password, const std::string& role) { return false; }
+bool change_password(int user_id, const std::string& old_pass, const std::string& new_pass) {
+    if (old_pass.empty() || new_pass.empty() || new_pass.length() < 6) {
+        return false;
+    }
+
+    // 1. Verificar que la contraseña antigua sea correcta
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT password_hash FROM users WHERE id = ?";
+    sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, user_id);
+
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    std::string current_hash = (const char*)sqlite3_column_text(stmt, 0);
+    sqlite3_finalize(stmt);
+
+    if (!bcrypt_verify(old_pass, current_hash)) {
+        return false; // Contraseña antigua incorrecta
+    }
+
+    // 2. Hashear la nueva contraseña
+    std::string new_hash = bcrypt_hash(new_pass);
+    if (new_hash.empty()) return false;
+
+    // 3. Actualizar en la base de datos
+    const char* update_sql = "UPDATE users SET password_hash = ?, last_password_change = CURRENT_TIMESTAMP WHERE id = ?";
+    sqlite3_prepare_v2(db, update_sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, new_hash.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 2, user_id);
+
+    int result = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (result == SQLITE_DONE);
+}
+
+// ===================== CREAR USUARIO  =====================
+bool create_user(const std::string& username, const std::string& password, const std::string& role) {
+    if (username.empty() || password.empty() || (role != "user" && role != "admin")) {
+        return false;
+    }
+
+    // Verificar si el usuario ya existe
+    sqlite3_stmt* stmt = nullptr;
+    const char* check_sql = "SELECT id FROM users WHERE username = ?";
+    sqlite3_prepare_v2(db, check_sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_STATIC);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return false; // Usuario ya existe
+    }
+    sqlite3_finalize(stmt);
+
+    // Hashear la contraseña
+    std::string hash = bcrypt_hash(password);
+    if (hash.empty()) return false;
+
+    // Insertar nuevo usuario
+    const char* insert_sql = "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)";
+    sqlite3_prepare_v2(db, insert_sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, hash.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, role.c_str(), -1, SQLITE_STATIC);
+
+    int result = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (result == SQLITE_DONE);
+}
