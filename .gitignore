@@ -1,0 +1,22 @@
+# Binarios y temporales
+bin/
+*.o
+portal
+*.db
+*.tcz
+
+# Carpetas de datos
+files/
+tmp/
+uploads/
+db/
+
+# Logs y temporales
+*.log
+*.tmp
+
+# Sistema
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

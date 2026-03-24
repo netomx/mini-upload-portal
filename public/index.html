@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mini Portal Archivos</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; }
+    .progress-bar { transition: width 0.4s ease; }
+    .modal { animation: pop 0.3s ease; }
+    @keyframes pop { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+  <div class="max-w-6xl mx-auto p-6">
+
+    <!-- HEADER -->
+    <div class="flex justify-between items-center mb-8">
+      <h1 class="text-4xl font-bold text-emerald-400">📁 Mini Portal</h1>
+      <div class="flex items-center gap-4">
+        <div id="user-info" class="text-emerald-400"></div>
+        
+        <button onclick="showNewUserModal()" id="btn-new-user" class="hidden px-5 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-2xl text-sm font-medium flex items-center gap-2">
+          <span>+</span> Nuevo Usuario
+        </button>
+        
+        <button onclick="logout()" class="px-8 py-3 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-2xl text-sm font-medium">Cerrar Sesión</button>
+      </div>
+    </div>
+
+    <!-- LOGIN -->
+    <div id="login-screen" class="max-w-md mx-auto bg-gray-900 rounded-3xl p-10 shadow-2xl">
+      <h2 class="text-3xl mb-8 text-center font-semibold">Iniciar Sesión</h2>
+      <input id="username" type="text" placeholder="Usuario" value="admin" class="w-full mb-4 bg-gray-800 border border-gray-700 rounded-2xl px-5 py-4 focus:outline-none focus:border-emerald-500">
+      <input id="password" type="password" placeholder="Contraseña" value="admin123" class="w-full mb-8 bg-gray-800 border border-gray-700 rounded-2xl px-5 py-4 focus:outline-none focus:border-emerald-500">
+      <button onclick="login()" class="w-full bg-emerald-500 hover:bg-emerald-600 py-4 rounded-2xl font-semibold text-xl transition">Entrar</button>
+    </div>
+
+    <!-- MAIN APP -->
+    <div id="app-screen" class="hidden">
+
+      <!-- ESPACIO DISPONIBLE -->
+      <div class="bg-gray-900 rounded-3xl p-6 mb-8 flex justify-between items-center">
+        <div>
+          <div class="text-emerald-400 text-sm tracking-widest">ESPACIO DISPONIBLE</div>
+          <div id="free-space" class="text-5xl font-bold">— GB libres</div>
+        </div>
+      </div>
+
+      <!-- BOTÓN SUBIR -->
+      <label class="block w-full cursor-pointer mb-12">
+        <div class="border-4 border-dashed border-emerald-500/60 hover:border-emerald-400 rounded-3xl p-16 text-center transition-all hover:scale-[1.01]">
+          <div class="text-7xl mb-6">📤</div>
+          <div class="text-3xl font-bold text-emerald-400">Subir archivos</div>
+        </div>
+        <input type="file" id="file-input" multiple class="hidden" onchange="startUpload(this.files)">
+      </label>
+
+      <!-- PROGRESS BARS -->
+      <div id="progress-container" class="space-y-8 mb-12"></div>
+
+      <!-- LISTADO ARCHIVOS -->
+      <div class="bg-gray-900 rounded-3xl overflow-hidden mb-12">
+        <div class="px-8 py-5 bg-gray-800 font-medium text-lg flex justify-between items-center">
+          <span>Archivos subidos</span>
+          <button onclick="loadFiles()" class="text-emerald-400 hover:text-white text-sm flex items-center gap-1">
+            ↻ <span class="text-xs">(auto cada 8s)</span>
+          </button>
+        </div>
+        <table class="w-full" id="files-table">
+          <thead class="bg-gray-950 text-xs text-gray-400">
+            <tr>
+              <th class="py-4 px-8 text-left">ID</th>
+              <th class="py-4 px-8 text-left">Nombre</th>
+              <th class="py-4 px-8 text-left">Tipo</th>
+              <th class="py-4 px-8 text-right">Tamaño</th>
+              <th class="py-4 px-8 text-center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="files-body" class="text-sm divide-y divide-gray-800"></tbody>
+        </table>
+      </div>
+
+      <!-- LISTADO USUARIOS -->
+      <div class="bg-gray-900 rounded-3xl overflow-hidden">
+        <div class="px-8 py-5 bg-gray-800 font-medium text-lg flex justify-between">
+          <span>Usuarios del sistema</span>
+          <button onclick="loadUsers()" class="text-emerald-400 hover:text-white text-sm">↻ Refrescar</button>
+        </div>
+        <table class="w-full" id="users-table">
+          <thead class="bg-gray-950 text-xs text-gray-400">
+            <tr>
+              <th class="py-4 px-8 text-left">Usuario</th>
+              <th class="py-4 px-8 text-left">Rol</th>
+              <th class="py-4 px-8 text-left">Último cambio</th>
+              <th class="py-4 px-8 text-center">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="users-body" class="text-sm divide-y divide-gray-800"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL NUEVO USUARIO -->
+  <div id="new-user-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+    <div class="modal bg-gray-900 rounded-3xl p-8 max-w-md w-full mx-4">
+      <h3 class="text-2xl font-bold mb-6">Crear Nuevo Usuario</h3>
+      <input id="new-username" placeholder="Nombre de usuario" class="w-full mb-4 bg-gray-800 border border-gray-700 rounded-2xl px-5 py-4">
+      <input id="new-password" type="password" placeholder="Contraseña" class="w-full mb-4 bg-gray-800 border border-gray-700 rounded-2xl px-5 py-4">
+      <input id="new-password-confirm" type="password" placeholder="Confirmar contraseña" class="w-full mb-6 bg-gray-800 border border-gray-700 rounded-2xl px-5 py-4">
+      <select id="new-role" class="w-full mb-8 bg-gray-800 border border-gray-700 rounded-2xl px-5 py-4">
+        <option value="user">Usuario normal</option>
+        <option value="admin">Administrador</option>
+      </select>
+      <div class="flex gap-4">
+        <button onclick="hideNewUserModal()" class="flex-1 py-4 bg-gray-700 hover:bg-gray-600 rounded-2xl">Cancelar</button>
+        <button onclick="createUser()" class="flex-1 py-4 bg-emerald-500 hover:bg-emerald-600 rounded-2xl font-semibold">Crear Usuario</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL RESET CONTRASEÑA -->
+  <div id="reset-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+    <div class="modal bg-gray-900 rounded-3xl p-8 max-w-md w-full mx-4 text-center">
+      <div class="text-amber-400 text-6xl mb-6">🔑</div>
+      <h3 class="text-2xl font-bold mb-4">Nueva contraseña generada</h3>
+      <div id="new-password-display" class="bg-gray-800 border border-gray-700 rounded-2xl p-6 text-2xl font-mono mb-8 break-all select-all"></div>
+      <button onclick="copyResetPassword()" class="w-full py-4 bg-amber-500 hover:bg-amber-600 rounded-2xl font-semibold mb-3">📋 Copiar contraseña</button>
+      <button onclick="hideResetModal()" class="w-full py-4 bg-gray-700 hover:bg-gray-600 rounded-2xl">Cerrar</button>
+    </div>
+  </div>
+
+  <!-- MODAL ERROR -->
+  <div id="error-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+    <div class="modal bg-gray-900 rounded-3xl p-8 max-w-md w-full mx-4 text-center">
+      <div class="text-red-500 text-5xl mb-6">⚠️</div>
+      <h3 id="error-title" class="text-2xl font-bold mb-3"></h3>
+      <p id="error-message" class="text-gray-400 mb-8"></p>
+      <button onclick="hideErrorModal()" class="bg-gray-700 hover:bg-gray-600 px-10 py-4 rounded-2xl font-medium">Cerrar</button>
+    </div>
+  </div>
+
+  <script>
+    let token = localStorage.getItem('token');
+    const API = `${window.location.protocol}//${window.location.host}`;
+
+    function showError(title, msg) {
+      document.getElementById('error-title').textContent = title;
+      document.getElementById('error-message').textContent = msg;
+      document.getElementById('error-modal').classList.remove('hidden');
+    }
+    function hideErrorModal() { document.getElementById('error-modal').classList.add('hidden'); }
+
+    async function apiCall(url, options = {}) {
+      options.headers = options.headers || {};
+      if (token) options.headers.Authorization = `Bearer ${token}`;
+      if (options.body && typeof options.body === 'string') options.headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      const res = await fetch(url, options);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    // ==================== LOGIN ====================
+    async function login() {
+      try {
+        const res = await fetch(`${API}/api/login`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: `username=${encodeURIComponent(document.getElementById('username').value)}&password=${encodeURIComponent(document.getElementById('password').value)}`
+        });
+        const data = await res.json();
+        if (data.success) {
+          token = data.token;
+          localStorage.setItem('token', token);
+          document.getElementById('login-screen').classList.add('hidden');
+          document.getElementById('app-screen').classList.remove('hidden');
+          loadUserInfo();
+          loadFiles();
+          updateFreeSpace();
+          loadUsers();
+          startAutoRefresh();
+        } else showError('Error', 'Credenciales inválidas');
+      } catch(e) { showError('Error de conexión', e.message); }
+    }
+
+    function logout() {
+      localStorage.removeItem('token');
+      location.reload();
+    }
+
+    async function loadUserInfo() {
+      try {
+        const data = await apiCall(`${API}/api/me`);
+        document.getElementById('user-info').innerHTML = `<span class="text-emerald-400">👤 Conectado</span>`;
+        document.getElementById('btn-new-user').classList.toggle('hidden', data.role !== 'admin');
+      } catch(e) {}
+    }
+
+    // ==================== ESPACIO DISPONIBLE ====================
+    async function updateFreeSpace() {
+      try {
+        const data = await apiCall(`${API}/api/status`);
+        document.getElementById('free-space').textContent = data.free_space;
+      } catch(e) {}
+    }
+
+    // ==================== SUBIDA ====================
+    async function startUpload(files) {
+      for (let file of files) {
+        const chunkSize = 4 * 1024 * 1024;
+        const totalChunks = Math.ceil(file.size / chunkSize);
+        const progressHTML = `<div id="prog-container-${file.name}" class="bg-gray-900 rounded-3xl p-6"><div class="flex justify-between mb-3"><span class="font-medium">${file.name}</span><span id="percent-${file.name}" class="text-emerald-400 font-mono">0%</span></div><div class="h-3 bg-gray-800 rounded-full overflow-hidden"><div id="bar-${file.name}" class="h-full bg-gradient-to-r from-emerald-500 to-cyan-400 progress-bar w-0"></div></div></div>`;
+        document.getElementById('progress-container').insertAdjacentHTML('beforeend', progressHTML);
+
+        const initData = await apiCall(`${API}/api/upload/init`, {method:'POST', body: `filename=${encodeURIComponent(file.name)}&total_chunks=${totalChunks}`});
+        const uploadId = initData.upload_id;
+
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * chunkSize;
+          const chunk = file.slice(start, start + chunkSize);
+          const formData = new FormData();
+          formData.append('upload_id', uploadId);
+          formData.append('chunk_index', i);
+          formData.append('total_chunks', totalChunks);
+          formData.append('chunk', chunk);
+          await fetch(`${API}/api/upload/chunk`, {method:'POST', headers:{'Authorization':`Bearer ${token}`}, body:formData});
+          const percent = Math.round(((i+1)/totalChunks)*100);
+          document.getElementById(`bar-${file.name}`).style.width = percent + '%';
+          document.getElementById(`percent-${file.name}`).textContent = percent + '%';
+        }
+
+        await apiCall(`${API}/api/upload/complete`, {method:'POST', body:`upload_id=${uploadId}`});
+
+        setTimeout(() => document.getElementById(`prog-container-${file.name}`).remove(), 3500);
+        loadFiles();
+        updateFreeSpace();
+      }
+    }
+
+    // ==================== ARCHIVOS CON AUTO-REFRESH ====================
+    let filesRefreshInterval;
+
+    async function loadFiles() {
+      try {
+        const data = await apiCall(`${API}/api/files`);
+        const tbody = document.getElementById('files-body');
+        tbody.innerHTML = '';
+        data.forEach(f => {
+          const sizeMB = (f.size / 1024 / 1024).toFixed(2);
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-gray-800 transition';
+          tr.innerHTML = `
+            <td class="px-8 py-4 font-mono text-gray-400">${f.id}</td>
+            <td class="px-8 py-4 font-medium">${f.filename}</td>
+            <td class="px-8 py-4 text-gray-400 uppercase">${f.filetype}</td>
+            <td class="px-8 py-4 text-right">${sizeMB} MB</td>
+            <td class="px-8 py-4 text-center space-x-4">
+              <button onclick="copyLink(${f.id}, '${f.token}')" class="text-sky-400 hover:text-sky-300">🔗</button>
+              <button onclick="directDownload(${f.id}, '${f.token}', '${f.filename}')" class="text-emerald-400 hover:text-emerald-300">⬇️</button>
+              <button onclick="deleteFile(${f.id})" class="text-red-400 hover:text-red-300">🗑️</button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } catch(e) { showError('Error', 'No se pudo cargar archivos'); }
+    }
+
+    function copyLink(id, token) {
+      const url = `${window.location.origin}/download?id=${id}&token=${token}`;
+      navigator.clipboard.writeText(url);
+      alert('✅ Link copiado');
+    }
+
+    function directDownload(id, token, filename) {
+      window.location.href = `/download?id=${id}&token=${token}`;
+    }
+
+    async function deleteFile(id) {
+      if (!confirm('¿Estás seguro de borrar este archivo permanentemente?')) return;
+      try {
+        await apiCall(`${API}/api/files/${id}`, {method: 'DELETE'});
+        loadFiles();
+      } catch(e) { showError('Error al borrar', e.message || 'Solo el administrador puede borrar archivos'); }
+    }
+
+    function startAutoRefresh() {
+      if (filesRefreshInterval) clearInterval(filesRefreshInterval);
+      filesRefreshInterval = setInterval(loadFiles, 8000);
+    }
+
+    // ==================== USUARIOS ====================
+    async function loadUsers() {
+      try {
+        const data = await apiCall(`${API}/api/users`);
+        const tbody = document.getElementById('users-body');
+        tbody.innerHTML = '';
+        data.forEach(u => {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-gray-800 transition';
+          tr.innerHTML = `
+            <td class="px-8 py-4">${u.username}</td>
+            <td class="px-8 py-4">${u.role}</td>
+            <td class="px-8 py-4 text-gray-400">${u.last_change || '-'}</td>
+            <td class="px-8 py-4 text-center">
+              <button onclick="resetPassword(${u.id})" class="text-amber-400 hover:text-amber-300">🔑 Resetear</button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } catch(e) { showError('Error', 'No se pudo cargar usuarios'); }
+    }
+
+    async function resetPassword(userId) {
+      if (!confirm('¿Resetear la contraseña de este usuario?')) return;
+      try {
+        const data = await apiCall(`${API}/api/users/${userId}/reset-password`, {method: 'POST'});
+        document.getElementById('new-password-display').textContent = data.new_password;
+        document.getElementById('reset-modal').classList.remove('hidden');
+        loadUsers();
+      } catch(e) { showError('Error', e.message); }
+    }
+
+    function copyResetPassword() {
+      const text = document.getElementById('new-password-display').textContent;
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      alert('✅ Contraseña copiada al portapapeles');
+    }
+
+    function hideResetModal() {
+      document.getElementById('reset-modal').classList.add('hidden');
+    }
+
+    function showNewUserModal() { document.getElementById('new-user-modal').classList.remove('hidden'); }
+    function hideNewUserModal() { document.getElementById('new-user-modal').classList.add('hidden'); }
+
+    async function createUser() {
+      const username = document.getElementById('new-username').value.trim();
+      const password = document.getElementById('new-password').value;
+      const confirm = document.getElementById('new-password-confirm').value;
+      const role = document.getElementById('new-role').value;
+
+      if (!username || !password || password !== confirm) {
+        showError('Error', 'Verifica los campos');
+        return;
+      }
+
+      try {
+        await apiCall(`${API}/api/users`, {
+          method: 'POST',
+          body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&role=${role}`
+        });
+        hideNewUserModal();
+        alert('✅ Usuario creado correctamente');
+        loadUsers();
+      } catch(e) { showError('Error', e.message); }
+    }
+
+    // Auto-login
+    if (token) {
+      document.getElementById('login-screen').classList.add('hidden');
+      document.getElementById('app-screen').classList.remove('hidden');
+      loadUserInfo();
+      loadFiles();
+      updateFreeSpace();
+      loadUsers();
+      startAutoRefresh();
+    }
+  </script>
+</body>
+</html>
