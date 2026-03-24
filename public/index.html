@@ -16,7 +16,7 @@
   <div class="max-w-6xl mx-auto p-6">
 
     <!-- HEADER -->
-    <div class="flex justify-between items-center mb-8">
+    <div id="logged-in-header" class="flex justify-between items-center mb-8 hidden">
       <h1 class="text-4xl font-bold text-emerald-400">📁 Mini Portal</h1>
       <div class="flex items-center gap-4">
         <div id="user-info" class="text-emerald-400"></div>
@@ -150,6 +150,15 @@
     let token = localStorage.getItem('token');
     const API = `${window.location.protocol}//${window.location.host}`;
 
+    // ==================== VISIBILIDAD DEL HEADER ====================
+    function showLoggedInHeader() {
+      document.getElementById('logged-in-header').classList.remove('hidden');
+    }
+
+    function hideLoggedInHeader() {
+      document.getElementById('logged-in-header').classList.add('hidden');
+    }
+
     function showError(title, msg) {
       document.getElementById('error-title').textContent = title;
       document.getElementById('error-message').textContent = msg;
@@ -183,6 +192,7 @@
           loadUserInfo();
           loadFiles();
           updateFreeSpace();
+	  showLoggedInHeader();
           loadUsers();
           startAutoRefresh();
         } else showError('Error', 'Credenciales inválidas');
@@ -191,6 +201,7 @@
 
     function logout() {
       localStorage.removeItem('token');
+      hideLoggedInHeader();
       location.reload();
     }
 
