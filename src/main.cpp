@@ -1,3 +1,4 @@
+#define CPPHTTPLIB_FORM_DATA_SUPPORT
 #include "httplib.h"
 #include "db.h"
 #include "helpers.h"
@@ -56,45 +57,104 @@ int main() {
         res.set_content("{\"upload_id\":\"" + upload_id + "\", \"chunk_size\":4194304}", "application/json");
     });
 
-    // ===================== UPLOAD CHUNK (ya estaba bien) =====================
+    // ===================== UPLOAD CHUNK CON MD5 (CORREGIDO PARA httplib 0.38.0) =====================
     svr.Post("/api/upload/chunk", [&](const httplib::Request& req, httplib::Response& res) {
         int user_id; std::string role;
         if (!check_auth(req, res, user_id, role)) return;
 
-        std::string upload_id = req.form.get_field("upload_id");
-        std::string idx_str = req.form.get_field("chunk_index");
-        std::string total_str = req.form.get_field("total_chunks");
-        int chunk_index = idx_str.empty() ? 0 : std::stoi(idx_str);
-        int total_chunks = total_str.empty() ? 1 : std::stoi(total_str);
+        // Leer campos de texto usando la API correcta de httplib 0.38.0
+        std::string upload_id   = req.form.get_field("upload_id");
+        std::string chunk_index_str = req.form.get_field("chunk_index");
+        std::string total_chunks_str = req.form.get_field("total_chunks");
+        std::string client_md5  = req.form.get_field("chunk_md5");
 
-        std::cout << "[DEBUG CHUNK] upload_id recibido = '" << upload_id << "'" << std::endl;
+        std::cout << "[CHUNK DEBUG] upload_id='" << upload_id << "'"
+                  << " | chunk_index='" << chunk_index_str << "'"
+                  << " | total_chunks='" << total_chunks_str << "'"
+                  << " | md5='" << client_md5 << "'" << std::endl;
 
-        if (req.form.has_file("chunk")) {
-            const auto& file = req.form.get_file("chunk");
-            std::string data(file.content.data(), file.content.size());
-            if (save_chunk(upload_id, chunk_index, total_chunks, data)) {
-                res.set_content("{\"status\":\"ok\"}", "application/json");
-                return;
-            }
+        if (upload_id.empty() || client_md5.empty()) {
+            res.status = 400;
+            res.set_content(R"({"error":"Faltan datos del chunk o MD5"})", "application/json");
+            std::cout << "[CHUNK ERROR] Faltan parámetros obligatorios" << std::endl;
+            return;
         }
-        res.status = 400;
-        res.set_content("{\"error\":\"Error al guardar chunk\"}", "application/json");
+
+        if (!req.form.has_file("chunk")) {
+            res.status = 400;
+            res.set_content(R"({"error":"No se recibió el chunk"})", "application/json");
+            std::cout << "[CHUNK ERROR] No se recibió el archivo 'chunk'" << std::endl;
+            return;
+        }
+
+        const auto& file = req.form.get_file("chunk");
+        std::string received_data(file.content.data(), file.content.size());
+
+        std::cout << "[CHUNK] Tamaño recibido: " << received_data.size() << " bytes" << std::endl;
+
+        std::string server_md5 = calculate_md5(received_data.data(), received_data.size());
+
+        std::cout << "[MD5] Cliente: " << client_md5 << " | Servidor: " << server_md5 << std::endl;
+
+        if (server_md5 != client_md5) {
+            res.status = 400;
+            res.set_content(R"({"error":"MD5 no coincide - chunk corrupto"})", "application/json");
+            return;
+        }
+
+        int chunk_index = std::stoi(chunk_index_str);
+        int total_chunks = std::stoi(total_chunks_str);
+
+        if (save_chunk(upload_id, chunk_index, total_chunks, received_data)) {
+            res.set_content(R"({"status":"ok", "chunk_index":)" + std::to_string(chunk_index) + R"(})", "application/json");
+            std::cout << "[CHUNK OK] Chunk " << chunk_index << " guardado correctamente" << std::endl;
+        } else {
+            res.status = 500;
+            res.set_content(R"({"error":"Error al guardar el chunk en disco"})", "application/json");
+            std::cout << "[CHUNK ERROR 500] save_chunk() devolvió false" << std::endl;
+        }
     });
 
-    // ===================== UPLOAD COMPLETE (CORREGIDO) =====================
-    svr.Post("/api/upload/complete", [&](const httplib::Request& req, httplib::Response& res) {
+    // ===================== UPLOAD COMPLETE =====================
+svr.Post("/api/upload/complete", [&](const httplib::Request& req, httplib::Response& res) {
         int user_id; std::string role;
         if (!check_auth(req, res, user_id, role)) return;
 
         std::string upload_id = req.get_param_value("upload_id");
-        std::cout << "[DEBUG COMPLETE] upload_id recibido = '" << upload_id << "'" << std::endl;
 
-        std::string token, filename;
-        if (complete_upload(upload_id, token, filename)) {
-            res.set_content("{\"success\":true, \"download_token\":\"" + token + "\", \"filename\":\"" + filename + "\"}", "application/json");
-        } else {
+        std::cout << "[COMPLETE] Recibido para upload_id = " << upload_id << std::endl;
+
+        if (upload_id.empty()) {
             res.status = 400;
-            res.set_content("{\"error\":\"Upload incompleto\"}", "application/json");
+            res.set_content(R"({"error":"Falta upload_id"})", "application/json");
+            return;
+        }
+
+        // 1. Verificar si ya fue completado antes (evita duplicados)
+        sqlite3_stmt* check = nullptr;
+        sqlite3_prepare_v2(db, "SELECT id, token FROM files WHERE upload_temp_id = ?", -1, &check, nullptr);
+        sqlite3_bind_text(check, 1, upload_id.c_str(), -1, SQLITE_STATIC);
+
+        if (sqlite3_step(check) == SQLITE_ROW) {
+            // Ya existía → devolver el token anterior
+            std::string existing_token = (const char*)sqlite3_column_text(check, 1);
+            sqlite3_finalize(check);
+
+            res.set_content("{\"status\":\"ok\", \"download_token\":\"" + existing_token + "\"}", "application/json");
+            std::cout << "[COMPLETE] Ya estaba completado anteriormente (idempotente)" << std::endl;
+            return;
+        }
+        sqlite3_finalize(check);
+
+        // 2. No existía → completarlo normalmente
+        std::string filename, download_token;
+        if (complete_upload(upload_id, filename, download_token)) {
+            res.set_content("{\"status\":\"ok\", \"download_token\":\"" + download_token + "\", \"filename\":\"" + filename + "\"}", "application/json");
+            std::cout << "[COMPLETE SUCCESS] Archivo finalizado: " << filename << std::endl;
+        } else {
+            res.status = 500;
+            res.set_content(R"({"error":"No se pudo completar el upload"})", "application/json");
+            std::cout << "[COMPLETE FAILED]" << std::endl;
         }
     });
 

@@ -255,39 +255,203 @@
         document.getElementById('free-space').textContent = data.free_space;
       } catch(e) {}
     }
+	
+// ==================== MD5 ====================
+	function calculateMD5(buffer) {
+	  const data = new Uint8Array(buffer);
+	  
+	  // 1. Padding
+	  const originalLength = data.length;
+	  const bitLength = originalLength * 8;
+	  
+	  // Calculate padding: 1 mod 512 bits, leaving 64 bits for length
+	  let padLen = (originalLength % 64 < 56) ? (56 - originalLength % 64) : (120 - originalLength % 64);
+	  const padded = new Uint8Array(originalLength + padLen + 8);
+	  padded.set(data);
+	  padded[originalLength] = 0x80; // Append "1" bit
 
-    // ==================== SUBIDA ====================
+	  // Append length as 64-bit little-endian
+	  const view = new DataView(padded.buffer);
+	  view.setUint32(padded.length - 8, bitLength, true); 
+	  // Note: For very large buffers (>512MB), you'd need to set the high 32 bits too
+	  view.setUint32(padded.length - 4, Math.floor(bitLength / 0x100000000), true);
+
+	  // 2. Initialize Variables
+	  let a = 0x67452301 | 0;
+	  let b = 0xefcdab89 | 0;
+	  let c = 0x98badcfe | 0;
+	  let d = 0x10325476 | 0;
+
+	  // Constants
+	  const k = [
+		0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+		0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+		0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+		0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+		0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+		0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+		0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+		0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
+	  ];
+
+	  const s = [
+		7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+		5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20,
+		4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+		6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+	  ];
+
+	  // 3. Process Blocks
+	  for (let i = 0; i < padded.length; i += 64) {
+		const w = new Uint32Array(16);
+		for (let j = 0; j < 16; j++) {
+		  w[j] = view.getUint32(i + j * 4, true);
+		}
+
+		let [aa, bb, cc, dd] = [a, b, c, d];
+
+		for (let j = 0; j < 64; j++) {
+		  let f, g;
+		  if (j < 16) {
+			f = (b & c) | (~b & d);
+			g = j;
+		  } else if (j < 32) {
+			f = (d & b) | (~d & c);
+			g = (5 * j + 1) % 16;
+		  } else if (j < 48) {
+			f = b ^ c ^ d;
+			g = (3 * j + 5) % 16;
+		  } else {
+			f = c ^ (b | ~d);
+			g = (7 * j) % 16;
+		  }
+
+		  const temp = d;
+		  d = c;
+		  c = b;
+		  b = (b + rotate_left((a + f + k[j] + w[g]) | 0, s[j])) | 0;
+		  a = temp;
+		}
+
+		a = (a + aa) | 0;
+		b = (b + bb) | 0;
+		c = (c + cc) | 0;
+		d = (d + dd) | 0;
+	  }
+
+	  // 4. Finalize
+	  const result = new Uint8Array(16);
+	  const outDv = new DataView(result.buffer);
+	  outDv.setUint32(0, a, true);
+	  outDv.setUint32(4, b, true);
+	  outDv.setUint32(8, c, true);
+	  outDv.setUint32(12, d, true);
+
+	  return Array.from(result).map(byte => byte.toString(16).padStart(2, '0')).join('');
+	}
+
+	function rotate_left(x, n) {
+	  return (x << n) | (x >>> (32 - n));
+	}
+
+    // ==================== SUBIDA CON MD5 ====================
     async function startUpload(files) {
       for (let file of files) {
         const chunkSize = 4 * 1024 * 1024;
         const totalChunks = Math.ceil(file.size / chunkSize);
-        const progressHTML = `<div id="prog-container-${file.name}" class="bg-gray-900 rounded-3xl p-6"><div class="flex justify-between mb-3"><span class="font-medium">${file.name}</span><span id="percent-${file.name}" class="text-emerald-400 font-mono">0%</span></div><div class="h-3 bg-gray-800 rounded-full overflow-hidden"><div id="bar-${file.name}" class="h-full bg-gradient-to-r from-emerald-500 to-cyan-400 progress-bar w-0"></div></div></div>`;
+
+        const progressHTML = `<div id="prog-${file.name}" class="bg-gray-900 rounded-3xl p-6 mb-6"><div class="flex justify-between mb-3"><span class="font-medium">${file.name}</span><span id="percent-${file.name}" class="text-emerald-400 font-mono">0%</span></div><div class="h-3 bg-gray-800 rounded-full overflow-hidden"><div id="bar-${file.name}" class="h-full bg-gradient-to-r from-emerald-500 to-cyan-400 progress-bar w-0"></div></div></div>`;
         document.getElementById('progress-container').insertAdjacentHTML('beforeend', progressHTML);
 
         const initData = await apiCall(`${API}/api/upload/init`, {method:'POST', body: `filename=${encodeURIComponent(file.name)}&total_chunks=${totalChunks}`});
         const uploadId = initData.upload_id;
 
+        let uploaded = 0;
+
         for (let i = 0; i < totalChunks; i++) {
-          const start = i * chunkSize;
-          const chunk = file.slice(start, start + chunkSize);
-          const formData = new FormData();
-          formData.append('upload_id', uploadId);
-          formData.append('chunk_index', i);
-          formData.append('total_chunks', totalChunks);
-          formData.append('chunk', chunk);
-          await fetch(`${API}/api/upload/chunk`, {method:'POST', headers:{'Authorization':`Bearer ${token}`}, body:formData});
-          const percent = Math.round(((i+1)/totalChunks)*100);
-          document.getElementById(`bar-${file.name}`).style.width = percent + '%';
-          document.getElementById(`percent-${file.name}`).textContent = percent + '%';
+          let success = false;
+          for (let attempt = 1; attempt <= 5; attempt++) {
+            try {
+              const start = i * chunkSize;
+              const chunk = file.slice(start, start + chunkSize);
+
+              const arrayBuffer = await chunk.arrayBuffer();
+              const chunkMD5 = calculateMD5(arrayBuffer);
+
+              const formData = new FormData();
+              formData.append('upload_id', uploadId);
+              formData.append('chunk_index', i.toString());
+              formData.append('total_chunks', totalChunks.toString());
+              formData.append('chunk_md5', chunkMD5);
+              formData.append('chunk', chunk);
+
+              const res = await fetch(`${API}/api/upload/chunk`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` },
+                body: formData
+              });
+
+              const data = await res.json();
+
+              if (data.status === "ok") {
+                success = true;
+                uploaded++;
+                const percent = Math.round((uploaded / totalChunks) * 100);
+                document.getElementById(`bar-${file.name}`).style.width = percent + '%';
+                document.getElementById(`percent-${file.name}`).textContent = percent + '%';
+                break;
+              }
+            } catch (e) {}
+            await new Promise(r => setTimeout(r, 1000 * attempt));
+          }
+          if (!success) {
+            showError('Error', `No se pudo subir el chunk ${i}`);
+            return;
+          }
         }
 
-        await apiCall(`${API}/api/upload/complete`, {method:'POST', body:`upload_id=${uploadId}`});
+        //await apiCall(`${API}/api/upload/complete`, {method:'POST', body:`upload_id=${uploadId}`});
+		let completeSuccess = false;
+        for (let attempt = 1; attempt <= 10; attempt++) {
+          try {
+            console.log(`[COMPLETE] Intento ${attempt}/10 para upload ${uploadId}`);
+            
+            const result = await apiCall(`${API}/api/upload/complete`, {
+              method: 'POST',
+              body: `upload_id=${uploadId}`
+            });
 
-        setTimeout(() => document.getElementById(`prog-container-${file.name}`).remove(), 3500);
+            if (result.status === "ok" || result.success) {
+              completeSuccess = true;
+              console.log(`[COMPLETE] Éxito en intento ${attempt}`);
+              break;
+            }
+          } catch (e) {
+            console.warn(`[COMPLETE] Intento ${attempt} falló:`, e.message || e);
+          }
+
+          if (attempt < 3) {
+            await new Promise(r => setTimeout(r, 1500 * attempt)); // 1.5s, 3s, 4.5s
+          }
+        }
+
+        if (!completeSuccess) {
+          showError('Error al finalizar', 'No se pudo completar el upload después de 3 intentos');
+          return;
+        }
+
+        // Éxito
+        setTimeout(() => document.getElementById(`prog-${file.name}`).remove(), 2500);
         loadFiles();
         updateFreeSpace();
       }
     }
+	
+        //setTimeout(() => document.getElementById(`prog-${file.name}`).remove(), 2500);
+        //loadFiles();
+        //updateFreeSpace();
+      //}
+    //}
 
     // ==================== ARCHIVOS CON AUTO-REFRESH ====================
     let filesRefreshInterval;
