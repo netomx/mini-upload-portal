@@ -112,7 +112,7 @@ bool complete_upload(const std::string& upload_id, std::string& out_token, std::
     out_token = generate_secure_token();
     out_filename = orig_name;
 
-    const char* ins_sql = R"(INSERT INTO files (filename, filetype, size, token, uploader_id) VALUES (?, ?, ?, ?, ?))";
+    const char* ins_sql = R"(INSERT INTO files (filename, filetype, size, token, uploader_id, upload_temp_id) VALUES (?, ?, ?, ?, ?, ?))";
     sqlite3_stmt* ins = nullptr;
     sqlite3_prepare_v2(db, ins_sql, -1, &ins, nullptr);
     sqlite3_bind_text(ins, 1, orig_name.c_str(), -1, SQLITE_STATIC);
@@ -120,11 +120,13 @@ bool complete_upload(const std::string& upload_id, std::string& out_token, std::
     sqlite3_bind_int64(ins, 3, std::filesystem::file_size(final_path));
     sqlite3_bind_text(ins, 4, out_token.c_str(), -1, SQLITE_STATIC);
     sqlite3_bind_int(ins, 5, user_id);
+	sqlite3_bind_text(ins, 6, upload_id.c_str(), -1, SQLITE_STATIC);
     sqlite3_step(ins);
     sqlite3_finalize(ins);
 
     std::filesystem::remove_all(dir);
-    sqlite3_exec(db, "DELETE FROM temp_uploads WHERE upload_id = ?", nullptr, nullptr, nullptr);
+    std::string del_sql = "DELETE FROM temp_uploads WHERE upload_id = '" + upload_id + "'";
+	sqlite3_exec(db, del_sql.c_str(), nullptr, nullptr, nullptr);
 
     std::cout << "[SUCCESS] ¡Upload completado! Archivo: " << orig_name << " | Token: " << out_token << std::endl;
     return true;
