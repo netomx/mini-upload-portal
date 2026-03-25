@@ -141,3 +141,19 @@ std::string get_free_space() {
     oss << std::fixed << std::setprecision(2) << free_gb << " GB libres";
     return oss.str();
 }
+
+std::string escape_json(const std::string& s) {
+    std::string result;
+    for (char c : s) {
+        if (c == '"') {
+            result += "\\\"";
+        } else if (c == '\\') {
+            result += "\\\\";
+        } else if (c >= 0 && c <= 31) {
+            // Ignorar caracteres de control invisibles
+        } else {
+            result += c;
+        }
+    }
+    return result;
+}

@@ -174,10 +174,14 @@ svr.Post("/api/upload/complete", [&](const httplib::Request& req, httplib::Respo
             std::string filetype = (const char*)sqlite3_column_text(stmt, 2);
             // Limpiar caracteres de control inválidos
             filetype.erase(std::remove_if(filetype.begin(), filetype.end(), [](unsigned char c){ return c < 32; }), filetype.end());
+			
+			std::string raw_filename = (const char*)sqlite3_column_text(stmt, 1);
+			std::string safe_json_filename = escape_json(raw_filename); // <--- Escapamos para el JSON
 
             json += "{";
             json += "\"id\":" + std::to_string(sqlite3_column_int(stmt, 0)) + ",";
-            json += "\"filename\":\"" + std::string((const char*)sqlite3_column_text(stmt, 1)) + "\",";
+            //json += "\"filename\":\"" + std::string((const char*)sqlite3_column_text(stmt, 1)) + "\",";
+			json += "\"filename\":\"" + safe_json_filename + "\",";
             json += "\"filetype\":\"" + filetype + "\",";
             json += "\"size\":" + std::to_string(sqlite3_column_int64(stmt, 3)) + ",";
             json += "\"token\":\"" + std::string((const char*)sqlite3_column_text(stmt, 4)) + "\"";
@@ -201,13 +205,17 @@ svr.Post("/api/upload/complete", [&](const httplib::Request& req, httplib::Respo
         }
 
         sqlite3_stmt* stmt = nullptr;
-        sqlite3_prepare_v2(db, "SELECT filename FROM files WHERE id = ? AND token = ?", -1, &stmt, nullptr);
+        //sqlite3_prepare_v2(db, "SELECT filename FROM files WHERE id = ? AND token = ?", -1, &stmt, nullptr);
+		sqlite3_prepare_v2(db, "SELECT internal_filename, filename FROM files WHERE id = ? AND token = ?", -1, &stmt, nullptr);
         sqlite3_bind_int(stmt, 1, std::stoi(id_str));
         sqlite3_bind_text(stmt, 2, token.c_str(), -1, SQLITE_STATIC);
 
         if (sqlite3_step(stmt) == SQLITE_ROW) {
-            std::string filename = (const char*)sqlite3_column_text(stmt, 0);
-            std::string filepath = "/mnt/xvdb1/files/" + filename;
+			std::string internal_name = (const char*)sqlite3_column_text(stmt, 0);
+			std::string display_name  = (const char*)sqlite3_column_text(stmt, 1);
+			std::string filepath = "/mnt/xvdb1/files/" + internal_name;
+            //std::string filename = (const char*)sqlite3_column_text(stmt, 0);
+            //std::string filepath = "/mnt/xvdb1/files/" + filename;
 
             if (std::filesystem::exists(filepath)) {
                 auto file_size = std::filesystem::file_size(filepath);
@@ -235,7 +243,8 @@ svr.Post("/api/upload/complete", [&](const httplib::Request& req, httplib::Respo
                     }
                 );
 
-                res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+                //res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+				res.set_header("Content-Disposition", "attachment; filename=\"" + display_name + "\"");
             } else {
                 res.status = 404;
                 res.set_content("Archivo no encontrado", "text/plain");
@@ -262,11 +271,15 @@ svr.Post("/api/upload/complete", [&](const httplib::Request& req, httplib::Respo
 
         // Obtener nombre del archivo
         sqlite3_stmt* stmt = nullptr;
-        sqlite3_prepare_v2(db, "SELECT filename FROM files WHERE id = ?", -1, &stmt, nullptr);
+        sqlite3_prepare_v2(db, "SELECT internal_filename FROM files WHERE id = ?", -1, &stmt, nullptr);
         sqlite3_bind_int(stmt, 1, file_id);
         std::string filename;
         if (sqlite3_step(stmt) == SQLITE_ROW) {
-            filename = (const char*)sqlite3_column_text(stmt, 0);
+            std::string internal_name = (const char*)sqlite3_column_text(stmt, 0);
+			std::string path = "/mnt/xvdb1/files/" + internal_name;
+			if (std::filesystem::exists(path)) {
+				std::filesystem::remove(path);
+			}
         }
         sqlite3_finalize(stmt);
 

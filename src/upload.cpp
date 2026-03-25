@@ -88,6 +88,7 @@ bool complete_upload(const std::string& upload_id, std::string& out_token, std::
         return false;
     }
 
+	/*
     std::string final_path = "/mnt/xvdb1/files/" + orig_name;
 
     std::ofstream final_file(final_path, std::ios::binary);
@@ -99,7 +100,25 @@ bool complete_upload(const std::string& upload_id, std::string& out_token, std::
         chunk.close();
     }
     final_file.close();
-
+	*/
+	
+	out_token = generate_secure_token();
+    out_filename = orig_name;
+	
+	std::string internal_name = out_token + "_" + orig_name;
+    std::string final_path = "/mnt/xvdb1/files/" + internal_name;
+	
+	std::ofstream final_file(final_path, std::ios::binary);
+    for (int i = 0; i < total; ++i) {
+        char cname[32];
+        snprintf(cname, sizeof(cname), "%04d.chunk", i);
+        std::ifstream chunk(dir + "/" + cname, std::ios::binary);
+        final_file << chunk.rdbuf();
+        chunk.close();
+    }
+    final_file.close();
+	
+	
     // === EXTENSIÓN LIMPIA ===
     std::string ext = "bin";
     size_t dot = orig_name.find_last_of('.');
@@ -109,9 +128,8 @@ bool complete_upload(const std::string& upload_id, std::string& out_token, std::
         if (ext.empty()) ext = "bin";
     }
 
-    out_token = generate_secure_token();
-    out_filename = orig_name;
-
+    
+	/*
     const char* ins_sql = R"(INSERT INTO files (filename, filetype, size, token, uploader_id, upload_temp_id) VALUES (?, ?, ?, ?, ?, ?))";
     sqlite3_stmt* ins = nullptr;
     sqlite3_prepare_v2(db, ins_sql, -1, &ins, nullptr);
@@ -121,6 +139,24 @@ bool complete_upload(const std::string& upload_id, std::string& out_token, std::
     sqlite3_bind_text(ins, 4, out_token.c_str(), -1, SQLITE_STATIC);
     sqlite3_bind_int(ins, 5, user_id);
 	sqlite3_bind_text(ins, 6, upload_id.c_str(), -1, SQLITE_STATIC);
+    sqlite3_step(ins);
+    sqlite3_finalize(ins);
+	*/
+	const char* ins_sql = R"(
+        INSERT INTO files (filename, internal_filename, filetype, size, token, uploader_id, upload_temp_id) 
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    )";
+    sqlite3_stmt* ins = nullptr;
+    sqlite3_prepare_v2(db, ins_sql, -1, &ins, nullptr);
+    
+    sqlite3_bind_text(ins, 1, orig_name.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(ins, 2, internal_name.c_str(), -1, SQLITE_STATIC); // <--- Guardamos el nombre real
+    sqlite3_bind_text(ins, 3, ext.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int64(ins, 4, std::filesystem::file_size(final_path));
+    sqlite3_bind_text(ins, 5, out_token.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int(ins, 6, user_id);
+    sqlite3_bind_text(ins, 7, upload_id.c_str(), -1, SQLITE_STATIC);
+    
     sqlite3_step(ins);
     sqlite3_finalize(ins);
 
