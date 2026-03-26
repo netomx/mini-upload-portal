@@ -6,9 +6,12 @@
 #include <filesystem>
 #include <sys/stat.h>
 #include <iostream>
-#include <algorithm>   // <--- NECESARIO para std::remove_if
+#include <algorithm>
+#include <mutex>
 
 extern sqlite3* db;
+
+std::mutex db_chunk_mutex;
 
 std::string init_upload(const std::string& filename, int total_chunks, int user_id) {
     std::string upload_id = generate_secure_token().substr(0, 32);
@@ -37,16 +40,46 @@ bool save_chunk(const std::string& upload_id, int chunk_index, int total_chunks,
 
     char fname[32];
     snprintf(fname, sizeof(fname), "%04d.chunk", chunk_index);
-    std::ofstream f(dir + "/" + fname, std::ios::binary);
+	std::string filepath = dir + "/" + fname;
+	bool ya_existia = std::filesystem::exists(filepath);
+    //std::ofstream f(dir + "/" + fname, std::ios::binary);
+    //f.write(data.data(), data.size());
+    //f.close();
+	std::ofstream f(filepath, std::ios::binary);
+    if (!f) {
+        std::cerr << "[CHUNK ERROR] No se pudo crear el archivo: " << filepath << std::endl;
+        return false;
+    }
     f.write(data.data(), data.size());
     f.close();
+	
+	if (!ya_existia) {
+        // Al entrar a este bloque, si otro hilo está actualizando la BD, este hilo espera su turno
+        std::lock_guard<std::mutex> lock(db_chunk_mutex);
 
+        const char* sql = "UPDATE temp_uploads SET chunks_received = chunks_received + 1 WHERE upload_id = ?";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, upload_id.c_str(), -1, SQLITE_STATIC);
+            
+            // Validamos que el paso se ejecute correctamente
+            if (sqlite3_step(stmt) != SQLITE_DONE) {
+                std::cerr << "[CHUNK DB ERROR] Falló el UPDATE para upload_id: " << upload_id << std::endl;
+            }
+            sqlite3_finalize(stmt);
+        }
+    } else {
+         std::cout << "[DEBUG CHUNK] El chunk " << chunk_index << " ya existía, se sobreescribió pero no se sumó doble." << std::endl;
+    }
+
+	/*
     const char* sql = "UPDATE temp_uploads SET chunks_received = chunks_received + 1 WHERE upload_id = ?";
     sqlite3_stmt* stmt = nullptr;
     sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
     sqlite3_bind_text(stmt, 1, upload_id.c_str(), -1, SQLITE_STATIC);
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
+	*/
 
     return true;
 }

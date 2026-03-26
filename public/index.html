@@ -149,6 +149,16 @@
   <script>
     let token = localStorage.getItem('token');
     const API = `${window.location.protocol}//${window.location.host}`;
+	
+	function escapeForJSAndHTML(str) {
+    if (!str) return "";
+    return str
+        .replace(/\\/g, "\\\\")  // Escapa barras invertidas
+        .replace(/'/g, "\\'")    // Escapa comillas simples (para el parámetro JS)
+        .replace(/"/g, "&quot;") // Escapa comillas dobles (para no romper el atributo HTML)
+        .replace(/</g, "&lt;")   // Previene inyección de etiquetas HTML
+        .replace(/>/g, "&gt;");
+	}
 
     // ==================== VISIBILIDAD DEL HEADER ====================
     function showLoggedInHeader() {
@@ -192,7 +202,7 @@
           loadUserInfo();
           loadFiles();
           updateFreeSpace();
-	  showLoggedInHeader();
+		  showLoggedInHeader();
           loadUsers();
           startAutoRefresh();
         } else showError('Error', 'Credenciales inválidas');
@@ -465,6 +475,7 @@
           const sizeMB = (f.size / 1024 / 1024).toFixed(2);
           const tr = document.createElement('tr');
           tr.className = 'hover:bg-gray-800 transition';
+		  const safeFilename = escapeForJSAndHTML(f.filename);
           tr.innerHTML = `
             <td class="px-8 py-4 font-mono text-gray-400">${f.id}</td>
             <td class="px-8 py-4 font-medium">${f.filename}</td>
@@ -472,7 +483,7 @@
             <td class="px-8 py-4 text-right">${sizeMB} MB</td>
             <td class="px-8 py-4 text-center space-x-4">
               <button onclick="copyLink(${f.id}, '${f.token}')" class="text-sky-400 hover:text-sky-300">🔗</button>
-              <button onclick="directDownload(${f.id}, '${f.token}', '${f.filename}')" class="text-emerald-400 hover:text-emerald-300">⬇️</button>
+              <button onclick="directDownload(${f.id}, '${f.token}', '${safeFilename}')" class="text-emerald-400 hover:text-emerald-300">⬇️</button>
               <button onclick="deleteFile(${f.id})" class="text-red-400 hover:text-red-300">🗑️</button>
             </td>
           `;
@@ -580,7 +591,9 @@
     if (token) {
       document.getElementById('login-screen').classList.add('hidden');
       document.getElementById('app-screen').classList.remove('hidden');
+	  showLoggedInHeader();
       loadUserInfo();
+	  
       loadFiles();
       updateFreeSpace();
       startAutoRefresh();

@@ -8,8 +8,15 @@
 #include <iostream>
 #include <sqlite3.h>
 #include <filesystem>
+#include <mutex>
+#include <condition_variable>
+#include <unordered_set>
 
 extern sqlite3* db;
+
+std::mutex completion_mutex;
+std::condition_variable completion_cv;
+std::unordered_set<std::string> active_completions;
 
 bool check_auth(const httplib::Request& req, httplib::Response& res, int& out_user_id, std::string& out_role) {
     auto auth = req.get_header_value("Authorization");
@@ -129,6 +136,26 @@ svr.Post("/api/upload/complete", [&](const httplib::Request& req, httplib::Respo
             res.set_content(R"({"error":"Falta upload_id"})", "application/json");
             return;
         }
+		
+		{
+            std::unique_lock<std::mutex> lock(completion_mutex);
+            // Si el upload_id ya está en la lista de "activos", el hilo se pausa aquí y espera.
+            completion_cv.wait(lock, [&]{
+                return active_completions.find(upload_id) == active_completions.end();
+            });
+            
+            // Cuando es nuestro turno, lo marcamos como activo para bloquear a otros.
+            active_completions.insert(upload_id);
+        }
+		
+		struct CompletionGuard {
+            std::string id;
+            ~CompletionGuard() {
+                std::lock_guard<std::mutex> lock(completion_mutex);
+                active_completions.erase(id);
+                completion_cv.notify_all(); // Despierta a los hilos que estaban pausados
+            }
+        } guard{upload_id};
 
         // 1. Verificar si ya fue completado antes (evita duplicados)
         sqlite3_stmt* check = nullptr;
@@ -141,7 +168,7 @@ svr.Post("/api/upload/complete", [&](const httplib::Request& req, httplib::Respo
             sqlite3_finalize(check);
 
             res.set_content("{\"status\":\"ok\", \"download_token\":\"" + existing_token + "\"}", "application/json");
-            std::cout << "[COMPLETE] Ya estaba completado anteriormente (idempotente)" << std::endl;
+            std::cout << "[COMPLETE] Ya estaba completado anteriormente" << std::endl;
             return;
         }
         sqlite3_finalize(check);
@@ -268,21 +295,29 @@ svr.Post("/api/upload/complete", [&](const httplib::Request& req, httplib::Respo
         }
 
         int file_id = std::stoi(req.matches[1]);
+		std::cout << "[DELETE] Inicio de tratar de borrar ID: " << file_id << std::endl;
 
         // Obtener nombre del archivo
         sqlite3_stmt* stmt = nullptr;
         sqlite3_prepare_v2(db, "SELECT internal_filename FROM files WHERE id = ?", -1, &stmt, nullptr);
         sqlite3_bind_int(stmt, 1, file_id);
-        std::string filename;
+        //std::string filename;
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             std::string internal_name = (const char*)sqlite3_column_text(stmt, 0);
 			std::string path = "/mnt/xvdb1/files/" + internal_name;
 			if (std::filesystem::exists(path)) {
 				std::filesystem::remove(path);
+				std::cout << "[DELETE] Borrado archivo: " << internal_name << std::endl;
+			} else {
+				std::cout << "[DELETE] No se encuentra el archivo: " << internal_name << std::endl;
+				res.status = 404;
+				res.set_content(R"({"error":"Archivo no encontrado"})", "application/json");
+				return;
 			}
         }
         sqlite3_finalize(stmt);
-
+		
+		/*
         if (filename.empty()) {
             res.status = 404;
             res.set_content(R"({"error":"Archivo no encontrado"})", "application/json");
@@ -294,11 +329,12 @@ svr.Post("/api/upload/complete", [&](const httplib::Request& req, httplib::Respo
         if (std::filesystem::exists(path)) {
             std::filesystem::remove(path);
         }
+		*/
 
         // Borrar de la BD
         sqlite3_exec(db, ("DELETE FROM files WHERE id = " + std::to_string(file_id)).c_str(), nullptr, nullptr, nullptr);
 
-        std::cout << "[DELETE] Archivo borrado por admin - ID: " << file_id << " | Archivo: " << filename << std::endl;
+        //std::cout << "[DELETE] Archivo borrado por admin - ID: " << file_id << " | Archivo: " << internal_name << std::endl;
         res.set_content(R"({"success":true})", "application/json");
     });
 
