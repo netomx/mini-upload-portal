@@ -30,9 +30,18 @@
       </div>
     </div>
 
+    <!-- VERIFICANDO SESIÓN -->
+    <div id="session-check" class="hidden max-w-md mx-auto bg-gray-900 rounded-3xl p-10 shadow-2xl text-center">
+      <div class="text-5xl mb-4">🔄</div>
+      <div class="text-emerald-400 text-lg">Verificando sesión…</div>
+    </div>
+
     <!-- LOGIN -->
     <div id="login-screen" class="max-w-md mx-auto bg-gray-900 rounded-3xl p-10 shadow-2xl">
       <h2 class="text-3xl mb-8 text-center font-semibold">Iniciar Sesión</h2>
+      <div id="session-expired" class="hidden mb-6 bg-amber-500/20 border border-amber-500/50 text-amber-300 rounded-2xl px-5 py-4 text-sm">
+        ⏳ Tu sesión dejó de ser válida. Vuelve a iniciar sesión para continuar.
+      </div>
       <input id="username" type="text" placeholder="Usuario" value="admin" class="w-full mb-4 bg-gray-800 border border-gray-700 rounded-2xl px-5 py-4 focus:outline-none focus:border-emerald-500">
       <input id="password" type="password" placeholder="Contraseña" value="admin123" class="w-full mb-8 bg-gray-800 border border-gray-700 rounded-2xl px-5 py-4 focus:outline-none focus:border-emerald-500">
       <button onclick="login()" class="w-full bg-emerald-500 hover:bg-emerald-600 py-4 rounded-2xl font-semibold text-xl transition">Entrar</button>
@@ -148,6 +157,9 @@
 
   <script>
     let token = localStorage.getItem('token');
+    let sessionExpiredHandled = false;
+    let filesRefreshInterval = null;
+    let refreshFailures = 0;
     const API = `${window.location.protocol}//${window.location.host}`;
 	
 	function escapeForJSAndHTML(str) {
@@ -181,8 +193,49 @@
       if (token) options.headers.Authorization = `Bearer ${token}`;
       if (options.body && typeof options.body === 'string') options.headers['Content-Type'] = 'application/x-www-form-urlencoded';
       const res = await fetch(url, options);
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const err = new Error(await res.text());
+        err.status = res.status;
+        // 401 en cualquier endpoint ≠ error cualquiera: el token ya no sirve
+        if (res.status === 401) handleUnauthorized();
+        throw err;
+      }
       return res.json();
+    }
+
+    function isAuthError(err) { return !!err && err.status === 401; }
+
+    // El token murió (caducó, se limpió la BD, se cambió la contraseña...):
+    // limpiar el estado, detener el auto-refresh y regresar al login. Una sola vez.
+    function handleUnauthorized() {
+      if (sessionExpiredHandled) return;
+      sessionExpiredHandled = true;
+
+      if (filesRefreshInterval) { clearInterval(filesRefreshInterval); filesRefreshInterval = null; }
+      localStorage.removeItem('token');
+      token = null;
+
+      document.getElementById('progress-container').innerHTML = '';
+      document.getElementById('app-screen').classList.add('hidden');
+      document.getElementById('session-check').classList.add('hidden');
+      hideLoggedInHeader();
+      document.getElementById('login-screen').classList.remove('hidden');
+      document.getElementById('session-expired').classList.remove('hidden');
+
+      showError('Sesión expirada', 'Tu sesión dejó de ser válida. Inicia sesión de nuevo para continuar.');
+    }
+
+    // Muestra la app asumiendo sesión válida (llamado tras login y tras validar el token)
+    async function revealApp() {
+      document.getElementById('login-screen').classList.add('hidden');
+      document.getElementById('session-check').classList.add('hidden');
+      document.getElementById('app-screen').classList.remove('hidden');
+      showLoggedInHeader();
+      await loadUserInfo();
+      if (sessionExpiredHandled) return;   // la sesión murió durante la carga: ya estamos en login
+      loadFiles(true);
+      updateFreeSpace();
+      startAutoRefresh();
     }
 
     // ==================== LOGIN ====================
@@ -197,14 +250,11 @@
         if (data.success) {
           token = data.token;
           localStorage.setItem('token', token);
-          document.getElementById('login-screen').classList.add('hidden');
-          document.getElementById('app-screen').classList.remove('hidden');
-          loadUserInfo();
-          loadFiles();
-          updateFreeSpace();
-		  showLoggedInHeader();
-          loadUsers();
-          startAutoRefresh();
+          sessionExpiredHandled = false;
+          refreshFailures = 0;
+          document.getElementById('session-expired').classList.add('hidden');
+          hideErrorModal();
+          await revealApp();
         } else showError('Error', 'Credenciales inválidas');
       } catch(e) { showError('Error de conexión', e.message); }
     }
@@ -254,6 +304,7 @@
         hideChangePasswordModal();
         alert('✅ Contraseña cambiada correctamente');
       } catch(e) {
+        if (isAuthError(e)) return;
         showError('Error', e.message);
       }
     }
@@ -367,13 +418,21 @@
     // ==================== SUBIDA CON MD5 ====================
     async function startUpload(files) {
       for (let file of files) {
+        if (sessionExpiredHandled) return;
         const chunkSize = 4 * 1024 * 1024;
         const totalChunks = Math.ceil(file.size / chunkSize);
 
         const progressHTML = `<div id="prog-${file.name}" class="bg-gray-900 rounded-3xl p-6 mb-6"><div class="flex justify-between mb-3"><span class="font-medium">${file.name}</span><span id="percent-${file.name}" class="text-emerald-400 font-mono">0%</span></div><div class="h-3 bg-gray-800 rounded-full overflow-hidden"><div id="bar-${file.name}" class="h-full bg-gradient-to-r from-emerald-500 to-cyan-400 progress-bar w-0"></div></div></div>`;
         document.getElementById('progress-container').insertAdjacentHTML('beforeend', progressHTML);
 
-        const initData = await apiCall(`${API}/api/upload/init`, {method:'POST', body: `filename=${encodeURIComponent(file.name)}&total_chunks=${totalChunks}`});
+        let initData;
+        try {
+          initData = await apiCall(`${API}/api/upload/init`, {method:'POST', body: `filename=${encodeURIComponent(file.name)}&total_chunks=${totalChunks}`});
+        } catch (e) {
+          if (isAuthError(e)) return;   // sesión expirada: handleUnauthorized ya mostró el login
+          showError('Error al subir', `No se pudo iniciar la subida de ${file.name}: ${e.message || e}`);
+          return;
+        }
         const uploadId = initData.upload_id;
 
         let uploaded = 0;
@@ -401,6 +460,9 @@
                 body: formData
               });
 
+              // Token caducado a mitad de la subida: no reintentar, regresar al login
+              if (res.status === 401) { handleUnauthorized(); return; }
+
               const data = await res.json();
 
               if (data.status === "ok") {
@@ -411,7 +473,8 @@
                 document.getElementById(`percent-${file.name}`).textContent = percent + '%';
                 break;
               }
-            } catch (e) {}
+              console.warn(`[CHUNK ${i}] intento ${attempt}: el servidor no respondió ok (${res.status})`);
+            } catch (e) { console.warn(`[CHUNK ${i}] intento ${attempt} falló:`, e.message || e); }
             await new Promise(r => setTimeout(r, 1000 * attempt));
           }
           if (!success) {
@@ -437,6 +500,7 @@
               break;
             }
           } catch (e) {
+            if (isAuthError(e)) return;   // sesión expirada: handleUnauthorized ya mostró el login
             console.warn(`[COMPLETE] Intento ${attempt} falló:`, e.message || e);
           }
 
@@ -451,8 +515,8 @@
         }
 
         // Éxito
-        setTimeout(() => document.getElementById(`prog-${file.name}`).remove(), 2500);
-        loadFiles();
+        setTimeout(() => document.getElementById(`prog-${file.name}`)?.remove(), 2500);
+        loadFiles(true);
         updateFreeSpace();
       }
     }
@@ -464,11 +528,12 @@
     //}
 
     // ==================== ARCHIVOS CON AUTO-REFRESH ====================
-    let filesRefreshInterval;
 
-    async function loadFiles() {
+    // silent=true (carga automática) → el fallo NO repite el modal cada 8s
+    async function loadFiles(silent = false) {
       try {
         const data = await apiCall(`${API}/api/files`);
+        refreshFailures = 0;
         const tbody = document.getElementById('files-body');
         tbody.innerHTML = '';
         data.forEach(f => {
@@ -489,7 +554,12 @@
           `;
           tbody.appendChild(tr);
         });
-      } catch(e) { showError('Error', 'No se pudo cargar archivos'); }
+      } catch(e) {
+        if (isAuthError(e)) return;              // handleUnauthorized ya nos mandó al login
+        if (!silent) { showError('Error', 'No se pudo cargar archivos'); return; }
+        if (++refreshFailures === 1) showError('Sin conexión', 'No se pudo cargar la lista de archivos. Se reintentará automáticamente.');
+        else console.warn('[auto-refresh] loadFiles:', e.message);
+      }
     }
 
     function copyLink(id, token) {
@@ -507,12 +577,13 @@
       try {
         await apiCall(`${API}/api/files/${id}`, {method: 'DELETE'});
         loadFiles();
-      } catch(e) { showError('Error al borrar', e.message || 'Solo el administrador puede borrar archivos'); }
+      } catch(e) { if (isAuthError(e)) return; showError('Error al borrar', e.message || 'Solo el administrador puede borrar archivos'); }
     }
 
     function startAutoRefresh() {
       if (filesRefreshInterval) clearInterval(filesRefreshInterval);
-      filesRefreshInterval = setInterval(loadFiles, 8000);
+      if (sessionExpiredHandled) return;
+      filesRefreshInterval = setInterval(() => { if (!sessionExpiredHandled) loadFiles(true); }, 8000);
     }
 
     // ==================== USUARIOS ====================
@@ -534,7 +605,7 @@
           `;
           tbody.appendChild(tr);
         });
-      } catch(e) { showError('Error', 'No se pudo cargar usuarios'); }
+      } catch(e) { if (isAuthError(e)) return; showError('Error', 'No se pudo cargar usuarios'); }
     }
 
     async function resetPassword(userId) {
@@ -544,7 +615,7 @@
         document.getElementById('new-password-display').textContent = data.new_password;
         document.getElementById('reset-modal').classList.remove('hidden');
         loadUsers();
-      } catch(e) { showError('Error', e.message); }
+      } catch(e) { if (isAuthError(e)) return; showError('Error', e.message); }
     }
 
     function copyResetPassword() {
@@ -584,19 +655,27 @@
         hideNewUserModal();
         alert('✅ Usuario creado correctamente');
         loadUsers();
-      } catch(e) { showError('Error', e.message); }
+      } catch(e) { if (isAuthError(e)) return; showError('Error', e.message); }
     }
 
-    // Auto-login
+    // Auto-login: validar el token contra el servidor ANTES de mostrar la app
     if (token) {
       document.getElementById('login-screen').classList.add('hidden');
-      document.getElementById('app-screen').classList.remove('hidden');
-	  showLoggedInHeader();
-      loadUserInfo();
-	  
-      loadFiles();
-      updateFreeSpace();
-      startAutoRefresh();
+      document.getElementById('session-check').classList.remove('hidden');
+      (async () => {
+        try {
+          await apiCall(`${API}/api/me`);
+        } catch (e) {
+          document.getElementById('session-check').classList.add('hidden');
+          if (isAuthError(e)) return;   // handleUnauthorized ya mostró el login con el aviso
+          // Servidor inalcanzable: el token podría seguir sirviendo, dejar la app y avisar una vez
+          console.warn('No se pudo validar la sesión:', e.message || e);
+          revealApp();
+          showError('Sin conexión', 'No se pudo contactar al servidor. Se reintentará automáticamente.');
+          return;
+        }
+        revealApp();
+      })();
     }
   </script>
 </body>
