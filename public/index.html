@@ -194,9 +194,12 @@
       if (options.body && typeof options.body === 'string') options.headers['Content-Type'] = 'application/x-www-form-urlencoded';
       const res = await fetch(url, options);
       if (!res.ok) {
-        const err = new Error(await res.text());
+        const text = await res.text();
+        let msg = text;
+        // El backend contesta {"error":"motivo"}: mostrar el motivo, no el JSON crudo.
+        try { const j = JSON.parse(text); if (j && j.error) msg = j.error; } catch (_) {}
+        const err = new Error(msg);
         err.status = res.status;
-        // 401 en cualquier endpoint ≠ error cualquiera: el token ya no sirve
         if (res.status === 401) handleUnauthorized();
         throw err;
       }
@@ -216,6 +219,10 @@
       token = null;
 
       document.getElementById('progress-container').innerHTML = '';
+      // las subidas en vuelo ya no tienen token: cortarlas en vez de reintentar a ciegas
+      activeUploads.forEach(ui => { try { ui.controller.abort(); } catch (e) {} });
+      activeUploads.clear();
+      setBeforeUnload(false);
       document.getElementById('app-screen').classList.add('hidden');
       document.getElementById('session-check').classList.add('hidden');
       hideLoggedInHeader();
@@ -259,8 +266,17 @@
       } catch(e) { showError('Error de conexión', e.message); }
     }
 
-    function logout() {
+    async function logout() {
+      // cerrar el sesión en el servidor (antes solo se borraba el token local y la
+      // fila quedaba viva hasta caducar)
+      try {
+        if (token) await fetch(`${API}/api/logout`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+      } catch (e) { /* si no contesta, igual salimos */ }
       localStorage.removeItem('token');
+      token = null;
+      activeUploads.forEach(ui => { try { ui.controller.abort(); } catch (e) {} });
+      activeUploads.clear();
+      setBeforeUnload(false);
       hideLoggedInHeader();
       location.reload();
     }
@@ -415,143 +431,231 @@
 	  return (x << n) | (x >>> (32 - n));
 	}
 
-    // ==================== SUBIDA CON MD5 ====================
-    async function startUpload(files) {
-      for (let file of files) {
-        if (sessionExpiredHandled) return;
-        const chunkSize = 4 * 1024 * 1024;
-        const totalChunks = Math.ceil(file.size / chunkSize);
+    // ==================== SUBIDA (reintentos, cancelación y reanudación) ====================
+    // El progreso se manipula por referencia, nunca con ids derivados del nombre: así un
+    // archivo con espacios, comillas o "<" no rompe la UI ni inyecta HTML.
+    const UPLOAD_RESUME_KEY = 'portal_uploads_v1';
+    const activeUploads = new Map();
+    let beforeUnloadOn = false;
 
-        const progressHTML = `<div id="prog-${file.name}" class="bg-gray-900 rounded-3xl p-6 mb-6"><div class="flex justify-between mb-3"><span class="font-medium">${file.name}</span><span id="percent-${file.name}" class="text-emerald-400 font-mono">0%</span></div><div class="h-3 bg-gray-800 rounded-full overflow-hidden"><div id="bar-${file.name}" class="h-full bg-gradient-to-r from-emerald-500 to-cyan-400 progress-bar w-0"></div></div></div>`;
-        document.getElementById('progress-container').insertAdjacentHTML('beforeend', progressHTML);
+    const resumeStore = () => { try { return JSON.parse(localStorage.getItem(UPLOAD_RESUME_KEY) || '{}'); } catch (e) { return {}; } };
+    const saveResumeStore = (s) => { try { localStorage.setItem(UPLOAD_RESUME_KEY, JSON.stringify(s)); } catch (e) {} };
+    const fileKey = (f) => `${f.name}|${f.size}|${f.lastModified}`;
 
-        let initData;
+    function blockWhileUploading(e) { e.preventDefault(); e.returnValue = 'Hay subidas en curso; si sales se interrumpen (podrás reanudarlas).'; }
+    function setBeforeUnload(on) {
+      if (on === beforeUnloadOn) return;
+      beforeUnloadOn = on;
+      if (on) window.addEventListener('beforeunload', blockWhileUploading);
+      else window.removeEventListener('beforeunload', blockWhileUploading);
+    }
+
+    function progressUI(file, key) {
+      const existing = activeUploads.get(key);
+      if (existing) return existing;
+      const wrap = document.createElement('div'); wrap.className = 'bg-gray-900 rounded-3xl p-6 mb-6';
+      const head = document.createElement('div'); head.className = 'flex justify-between items-center mb-3 gap-4';
+      const name = document.createElement('span'); name.className = 'font-medium truncate'; name.textContent = file.name; name.title = file.name;
+      const right = document.createElement('div'); right.className = 'flex items-center gap-3 shrink-0';
+      const state = document.createElement('span'); state.className = 'text-xs text-gray-400';
+      const pct = document.createElement('span'); pct.className = 'text-emerald-400 font-mono'; pct.textContent = '0%';
+      const cancelBtn = document.createElement('button'); cancelBtn.className = 'text-xs text-red-400 hover:text-red-300'; cancelBtn.textContent = 'Cancelar';
+      const track = document.createElement('div'); track.className = 'h-3 bg-gray-800 rounded-full overflow-hidden';
+      const bar = document.createElement('div'); bar.className = 'h-full bg-gradient-to-r from-emerald-500 to-cyan-400 progress-bar w-0';
+      track.appendChild(bar);
+      right.append(state, pct, cancelBtn);
+      head.append(name, right);
+      wrap.append(head, track);
+      document.getElementById('progress-container').appendChild(wrap);
+      const ui = { wrap, bar, pct, state, cancelBtn, controller: null };
+      activeUploads.set(key, ui);
+      setBeforeUnload(true);
+      return ui;
+    }
+
+    function dropProgress(key, keepSecs = 0) {
+      const ui = activeUploads.get(key);
+      if (!ui) return;
+      const kill = () => { ui.wrap.remove(); activeUploads.delete(key); if (!activeUploads.size) setBeforeUnload(false); };
+      keepSecs ? setTimeout(kill, keepSecs * 1000) : kill();
+    }
+
+    function setProgress(ui, done, total, label) {
+      const percent = total ? Math.round((done / total) * 100) : 0;
+      ui.bar.style.width = percent + '%';
+      ui.pct.textContent = percent + '%';
+      if (label !== undefined) ui.state.textContent = label;
+    }
+
+    async function sendChunk(ui, uploadId, i, chunk, done, total) {
+      const buf = await chunk.arrayBuffer();
+      const md5 = calculateMD5(buf);
+      let lastErr = null;
+      for (let attempt = 1; attempt <= 5; attempt++) {
         try {
-          initData = await apiCall(`${API}/api/upload/init`, {method:'POST', body: `filename=${encodeURIComponent(file.name)}&total_chunks=${totalChunks}`});
+          const fd = new FormData();
+          fd.append('upload_id', uploadId);
+          fd.append('chunk_index', String(i));
+          fd.append('chunk_md5', md5);
+          fd.append('chunk', chunk);
+          const res = await fetch(`${API}/api/upload/chunk`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` },
+            body: fd,
+            signal: ui.controller.signal
+          });
+          if (res.status === 401) { handleUnauthorized(); const e = new Error('sesión expirada'); e.status = 401; throw e; }
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.status === 'ok') return;
+          const err = new Error(data.error || `el servidor rechazó el chunk ${i + 1} (${res.status})`);
+          // 4xx: reenviar lo mismo no lo arregla (fuera de rango, md5, subida caducada)
+          if (res.status >= 400 && res.status < 500) err.permanent = true;
+          throw err;
         } catch (e) {
-          if (isAuthError(e)) return;   // sesión expirada: handleUnauthorized ya mostró el login
-          showError('Error al subir', `No se pudo iniciar la subida de ${file.name}: ${e.message || e}`);
-          return;
+          if (e.name === 'AbortError' || isAuthError(e)) throw e;
+          lastErr = e;
+          if (e.permanent) throw e;
+          if (attempt === 5) throw e;
+          setProgress(ui, done, total, `reintentando chunk ${i + 1} (${attempt}/5)`);
+          await new Promise(r => setTimeout(r, 800 * attempt));
         }
-        const uploadId = initData.upload_id;
+      }
+      throw lastErr || new Error(`no se pudo subir el chunk ${i + 1}`);
+    }
 
-        let uploaded = 0;
+    async function startUpload(files) {
+      for (const file of files) {
+        if (sessionExpiredHandled) return;
+        const key = fileKey(file);
+        const ui = progressUI(file, key);
+        ui.controller = new AbortController();
+        ui.cancelBtn.onclick = () => { ui.state.textContent = 'cancelando…'; ui.cancelBtn.disabled = true; ui.controller.abort(); };
 
-        for (let i = 0; i < totalChunks; i++) {
-          let success = false;
-          for (let attempt = 1; attempt <= 5; attempt++) {
-            try {
-              const start = i * chunkSize;
-              const chunk = file.slice(start, start + chunkSize);
+        const CHUNK = 4 * 1024 * 1024;
+        const total = Math.max(1, Math.ceil(file.size / CHUNK));
+        let uploadId = null;
+        let have = new Set();
 
-              const arrayBuffer = await chunk.arrayBuffer();
-              const chunkMD5 = calculateMD5(arrayBuffer);
-
-              const formData = new FormData();
-              formData.append('upload_id', uploadId);
-              formData.append('chunk_index', i.toString());
-              formData.append('total_chunks', totalChunks.toString());
-              formData.append('chunk_md5', chunkMD5);
-              formData.append('chunk', chunk);
-
-              const res = await fetch(`${API}/api/upload/chunk`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` },
-                body: formData
-              });
-
-              // Token caducado a mitad de la subida: no reintentar, regresar al login
-              if (res.status === 401) { handleUnauthorized(); return; }
-
-              const data = await res.json();
-
-              if (data.status === "ok") {
-                success = true;
-                uploaded++;
-                const percent = Math.round((uploaded / totalChunks) * 100);
-                document.getElementById(`bar-${file.name}`).style.width = percent + '%';
-                document.getElementById(`percent-${file.name}`).textContent = percent + '%';
-                break;
-              }
-              console.warn(`[CHUNK ${i}] intento ${attempt}: el servidor no respondió ok (${res.status})`);
-            } catch (e) { console.warn(`[CHUNK ${i}] intento ${attempt} falló:`, e.message || e); }
-            await new Promise(r => setTimeout(r, 1000 * attempt));
-          }
-          if (!success) {
-            showError('Error', `No se pudo subir el chunk ${i}`);
-            return;
-          }
-        }
-
-        //await apiCall(`${API}/api/upload/complete`, {method:'POST', body:`upload_id=${uploadId}`});
-		let completeSuccess = false;
-        for (let attempt = 1; attempt <= 10; attempt++) {
+        // ¿quedó una subida interrumpida de ESTE archivo (mismo nombre, tamaño y fecha)?
+        const saved = resumeStore()[key];
+        if (saved && saved.total_chunks === total) {
           try {
-            console.log(`[COMPLETE] Intento ${attempt}/10 para upload ${uploadId}`);
-            
-            const result = await apiCall(`${API}/api/upload/complete`, {
-              method: 'POST',
-              body: `upload_id=${uploadId}`
-            });
-
-            if (result.status === "ok" || result.success) {
-              completeSuccess = true;
-              console.log(`[COMPLETE] Éxito en intento ${attempt}`);
-              break;
+            const st = await apiCall(`${API}/api/upload/status/${saved.upload_id}`, { signal: ui.controller.signal });
+            if (st.total === total && !st.missing_truncated) {
+              uploadId = saved.upload_id;
+              const missing = new Set(st.missing || []);
+              for (let i = 0; i < total; i++) if (!missing.has(i)) have.add(i);
+              setProgress(ui, have.size, total, `reanudando (${have.size}/${total})`);
             }
           } catch (e) {
-            if (isAuthError(e)) return;   // sesión expirada: handleUnauthorized ya mostró el login
-            console.warn(`[COMPLETE] Intento ${attempt} falló:`, e.message || e);
-          }
-
-          if (attempt < 3) {
-            await new Promise(r => setTimeout(r, 1500 * attempt)); // 1.5s, 3s, 4.5s
+            if (isAuthError(e)) { dropProgress(key); return; }
+            const s = resumeStore(); delete s[key]; saveResumeStore(s);   // caducó: empezar de cero
           }
         }
 
-        if (!completeSuccess) {
-          showError('Error al finalizar', 'No se pudo completar el upload después de 3 intentos');
-          return;
+        if (!uploadId) {
+          try {
+            const init = await apiCall(`${API}/api/upload/init`, {
+              method: 'POST',
+              signal: ui.controller.signal,
+              body: `filename=${encodeURIComponent(file.name)}&total_chunks=${total}`
+            });
+            uploadId = init.upload_id;
+            const s = resumeStore();
+            s[key] = { upload_id: uploadId, total_chunks: total, ts: Date.now() };
+            saveResumeStore(s);
+          } catch (e) {
+            if (isAuthError(e) || e.name === 'AbortError') { dropProgress(key); return; }
+            setProgress(ui, 0, total, 'no se pudo iniciar');
+            showError('Error al subir', `${file.name}: ${e.message || e}`);
+            continue;
+          }
         }
 
-        // Éxito
-        setTimeout(() => document.getElementById(`prog-${file.name}`)?.remove(), 2500);
+        let done = have.size;
+        try {
+          for (let i = 0; i < total; i++) {
+            if (sessionExpiredHandled) return;
+            if (have.has(i)) continue;
+            await sendChunk(ui, uploadId, i, file.slice(i * CHUNK, (i + 1) * CHUNK), done, total);
+            done++;
+            setProgress(ui, done, total, '');
+          }
+        } catch (e) {
+          if (e.name === 'AbortError') { setProgress(ui, done, total, 'cancelado — vuelve a elegir el archivo para reanudar'); continue; }
+          if (isAuthError(e)) { dropProgress(key); return; }
+          setProgress(ui, done, total, 'interrumpido — se puede reanudar');
+          showError('Subida incompleta', `${file.name}: ${e.message || e}\n\nAl volver a seleccionar el mismo archivo se reanuda donde quedó.`);
+          continue;
+        }
+
+        let result = null;
+        for (let attempt = 1; attempt <= 10; attempt++) {
+          try {
+            setProgress(ui, done, total, 'ensamblando…');
+            result = await apiCall(`${API}/api/upload/complete`, {
+              method: 'POST', body: `upload_id=${uploadId}`, signal: ui.controller.signal
+            });
+            break;
+          } catch (e) {
+            if (isAuthError(e)) { dropProgress(key); return; }
+            if (e.name === 'AbortError') { setProgress(ui, done, total, 'cancelado'); result = null; break; }
+            // 400 = el servidor ya dictaminó (faltan chunks, tamaño, espacio): no reintentar
+            if (e.status && e.status >= 400 && e.status < 500 && e.status !== 409) { result = e; break; }
+            if (attempt === 10) { result = e; break; }
+            setProgress(ui, done, total, `reintentando ensamblado (${attempt}/10)`);
+            await new Promise(r => setTimeout(r, 1500 * Math.min(attempt, 3)));
+          }
+        }
+
+        if (result instanceof Error) {
+          setProgress(ui, done, total, 'no se pudo completar');
+          showError('Error al finalizar', `${file.name}: ${result.message}`);
+          continue;
+        }
+        if (!result) continue;
+
+        const s = resumeStore(); delete s[key]; saveResumeStore(s);
+        setProgress(ui, total, total, `completado${result.size ? ' (' + (result.size / 1024 / 1024).toFixed(2) + ' MB)' : ''}`);
         loadFiles(true);
         updateFreeSpace();
+        dropProgress(key, 3);
       }
+      if (!activeUploads.size) setBeforeUnload(false);
     }
-	
-        //setTimeout(() => document.getElementById(`prog-${file.name}`).remove(), 2500);
-        //loadFiles();
-        //updateFreeSpace();
-      //}
     //}
 
     // ==================== ARCHIVOS CON AUTO-REFRESH ====================
 
     // silent=true (carga automática) → el fallo NO repite el modal cada 8s
+    // Las filas se construyen con textContent: un nombre de archivo con HTML nunca
+    // se interpreta como marcado (antes se inyectaba crudo en innerHTML y el
+    // auto-refresh lo re-ejecutaba cada 8 segundos).
     async function loadFiles(silent = false) {
       try {
         const data = await apiCall(`${API}/api/files`);
         refreshFailures = 0;
         const tbody = document.getElementById('files-body');
-        tbody.innerHTML = '';
+        tbody.textContent = '';
         data.forEach(f => {
-          const sizeMB = (f.size / 1024 / 1024).toFixed(2);
           const tr = document.createElement('tr');
           tr.className = 'hover:bg-gray-800 transition';
-		  const safeFilename = escapeForJSAndHTML(f.filename);
-          tr.innerHTML = `
-            <td class="px-8 py-4 font-mono text-gray-400">${f.id}</td>
-            <td class="px-8 py-4 font-medium">${f.filename}</td>
-            <td class="px-8 py-4 text-gray-400 uppercase">${f.filetype}</td>
-            <td class="px-8 py-4 text-right">${sizeMB} MB</td>
-            <td class="px-8 py-4 text-center space-x-4">
-              <button onclick="copyLink(${f.id}, '${f.token}')" class="text-sky-400 hover:text-sky-300">🔗</button>
-              <button onclick="directDownload(${f.id}, '${f.token}', '${safeFilename}')" class="text-emerald-400 hover:text-emerald-300">⬇️</button>
-              <button onclick="deleteFile(${f.id})" class="text-red-400 hover:text-red-300">🗑️</button>
-            </td>
-          `;
+          if (f.md5) tr.title = `MD5 ${f.md5}`;
+          const cell = (cls, text) => { const td = document.createElement('td'); td.className = cls; td.textContent = text; tr.appendChild(td); return td; };
+          cell('px-8 py-4 font-mono text-gray-400', f.id);
+          cell('px-8 py-4 font-medium break-all max-w-xs', f.filename);
+          cell('px-8 py-4 text-gray-400 uppercase', f.filetype);
+          cell('px-8 py-4 text-right', (f.size / 1024 / 1024).toFixed(2) + ' MB');
+          const acts = cell('px-8 py-4 text-center space-x-4', '');
+          const btn = (cls, label, title, fn) => {
+            const b = document.createElement('button');
+            b.className = cls; b.textContent = label; b.title = title;
+            b.addEventListener('click', fn);
+            acts.appendChild(b);
+          };
+          btn('text-sky-400 hover:text-sky-300', '🔗', 'copiar enlace', () => copyLink(f.id, f.token));
+          btn('text-emerald-400 hover:text-emerald-300', '⬇️', 'descargar', () => directDownload(f.id, f.token));
+          btn('text-red-400 hover:text-red-300', '🗑️', 'borrar', () => deleteFile(f.id));
           tbody.appendChild(tr);
         });
       } catch(e) {
@@ -568,7 +672,8 @@
       alert('✅ Link copiado');
     }
 
-    function directDownload(id, token, filename) {
+    function directDownload(id, token) {
+      // el nombre lo manda el servidor en Content-Disposition
       window.location.href = `/download?id=${id}&token=${token}`;
     }
 
@@ -591,18 +696,20 @@
       try {
         const data = await apiCall(`${API}/api/users`);
         const tbody = document.getElementById('users-body');
-        tbody.innerHTML = '';
+        tbody.textContent = '';
         data.forEach(u => {
           const tr = document.createElement('tr');
           tr.className = 'hover:bg-gray-800 transition';
-          tr.innerHTML = `
-            <td class="px-8 py-4">${u.username}</td>
-            <td class="px-8 py-4">${u.role}</td>
-            <td class="px-8 py-4 text-gray-400">${u.last_change || '-'}</td>
-            <td class="px-8 py-4 text-center">
-              <button onclick="resetPassword(${u.id})" class="text-amber-400 hover:text-amber-300">🔑 Resetear</button>
-            </td>
-          `;
+          const cell = (cls, text) => { const td = document.createElement('td'); td.className = cls; td.textContent = text; tr.appendChild(td); return td; };
+          cell('px-8 py-4', u.username);
+          cell('px-8 py-4', u.role);
+          cell('px-8 py-4 text-gray-400', u.last_change || '-');
+          const acts = cell('px-8 py-4 text-center', '');
+          const b = document.createElement('button');
+          b.className = 'text-amber-400 hover:text-amber-300';
+          b.textContent = '🔑 Resetear';
+          b.addEventListener('click', () => resetPassword(u.id));
+          acts.appendChild(b);
           tbody.appendChild(tr);
         });
       } catch(e) { if (isAuthError(e)) return; showError('Error', 'No se pudo cargar usuarios'); }
@@ -657,6 +764,15 @@
         loadUsers();
       } catch(e) { if (isAuthError(e)) return; showError('Error', e.message); }
     }
+
+    // descarta subidas guardadas hace más de un día (el servidor ya tiró los chunks)
+    (() => {
+      const s = resumeStore(); let changed = false;
+      for (const k of Object.keys(s)) {
+        if (!s[k] || !s[k].upload_id || Date.now() - (s[k].ts || 0) > 24 * 3600 * 1000) { delete s[k]; changed = true; }
+      }
+      if (changed) saveResumeStore(s);
+    })();
 
     // Auto-login: validar el token contra el servidor ANTES de mostrar la app
     if (token) {
